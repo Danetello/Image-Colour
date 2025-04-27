@@ -1,28 +1,5 @@
 import numpy as np
-from PIL import Image
-import os
-
-def findFiles(filePath):
-    fileList = []
-    
-    for root, dirs, files in os.walk(filePath):
-        for file in files:
-            # Append the file name to the list
-            fileList.append(file)
-    
-    return fileList
-
-path = os.path.abspath(os.getcwd())
-
-# Find all the files in the input folder
-filePathCC = path + "\Textures_cc\\"
-filePathA = path + "\Textures_a\\"
-filePathACC = path + "\Textures_acc\\"
-filePathOUT = path + "\output\\"
-
-filelistA = findFiles(filePathA)
-filelistCC = findFiles(filePathCC)
-filelistACC = findFiles(filePathACC)
+import FileHandler as fh
 
 def determineGardient(gradientInput, widthIn, lengthIn):
     """
@@ -346,17 +323,22 @@ def colourImage(greyArrayInput, colourArrayInput, colourArrayBaseInput, inputRGB
 def createChapter(rgbIn):
     try:
         # for i in range(5,6,1):
-        for i in range(len(filelistCC)):
-            print("Generating recolour of", filelistACC[i])
-            colourImageExtract = np.asarray(Image.open(filePathCC + filelistCC[i]).convert('RGB'), dtype=np.uint64)
-            greyImageExtract = np.asarray(Image.open(filePathA + filelistA[i]).convert('RGB'), dtype=np.uint64)
-            colourImageBaseExtract = np.asarray(Image.open(filePathACC + filelistACC[i]).convert('RGB'), dtype=np.uint64)
 
-            newImage = np.array(colourImage(greyImageExtract, colourImageExtract, colourImageBaseExtract, rgbIn, "R"), dtype= np.uint8)   
+        iterations = fh.getNumberImages()
 
-            im = Image.fromarray(newImage)
-            im.save(filePathOUT + filelistA[i][:-6] + ".png")
+        print(iterations)
+        
+        for i in range(iterations):
+            print("Processing completed: ", (i/iterations)*100)
+
+            maskImageExtract = fh.extractImage("mask", i)
+            baseImageExtract = fh.extractImage("base", i)
+            greyImageExtract = fh.extractImage("grey", i)
             
+            newImage = colourImage(greyImageExtract, maskImageExtract, baseImageExtract, rgbIn, "R")
+
+            fh.imageGenerate(newImage, i)
+
     except Exception as e:
         print(f"Error colouring file: {e}")
     
