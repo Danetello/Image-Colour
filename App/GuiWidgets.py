@@ -421,11 +421,16 @@ class GuideBanner(ttk.Frame):
             self.actions.grid_remove()
 
 
+# Screen pixels per image pixel the views zoom between. Whole steps (and halves) show every pixel without blurring.
+ZOOM_STEPS = (0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32)
+
+
 class ViewState:
     """Zoom and position shared by image views, so they always show the same part of the texture."""
 
     def __init__(self):
-        self.zoom = 1.0
+        self.scale = None  # screen pixels per image pixel; None is the smallest allowed, minScale
+        self.minScale = 1.0
         self.centreX = 0.5
         self.centreY = 0.5
         self.views = []
@@ -438,12 +443,15 @@ class ViewState:
             listener()
 
     def reset(self):
-        self.zoom, self.centreX, self.centreY = 1.0, 0.5, 0.5
+        self.scale, self.centreX, self.centreY = None, 0.5, 0.5
         self.changed()
+
+    def currentScale(self):
+        return max(self.scale or 0, self.minScale)
 
 
 class ImageView(ttk.Frame):
-    """Shows an image scaled to fit, with scroll-to-zoom, drag-to-move and double-click-to-fit."""
+    """Shows an image at actual size or larger, with scroll-to-zoom, drag-to-move and double-click for actual size."""
 
     def __init__(self, parent, theme, state, placeholder):
         super().__init__(parent)
@@ -506,7 +514,7 @@ class ImageView(ttk.Frame):
         """Returns (scale, left, top) of the visible area in image pixels, keeping it inside the image."""
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
         imageWidth, imageHeight = self.image.size
-        scale = min(width / imageWidth, height / imageHeight) * self.state.zoom
+        scale = self.state.currentScale()
         viewWidth, viewHeight = width / scale, height / scale
 
         def clampCentre(centre, view, size):
@@ -544,19 +552,26 @@ class ImageView(ttk.Frame):
         box = (max(left, 0), max(top, 0), min(left + width / scale, imageWidth), min(top + height / scale, imageHeight))
         size = (max(1, round((box[2] - box[0]) * scale)), max(1, round((box[3] - box[1]) * scale)))
 
-        # From 100% up, every texture pixel is shown sharp
-        if scale >= 1:
+        if scale > 1:
             shown = self.image.resize(size, Image.Resampling.NEAREST, box=box)
         else:
-            factor, level = next(((f, l) for f, l in reversed(self.levels) if scale * f >= 1), self.levels[0])
+            # The smallest copy that still has at least one pixel per screen pixel, so it's only ever made smaller
+            factor, level = next(((f, l) for f, l in reversed(self.levels) if scale * f <= 1 + 1e-9), self.levels[0])
             levelBox = tuple(value / factor for value in box)
-            shown = level.resize(size, Image.Resampling.BILINEAR, box=levelBox)
+            if abs(scale * factor - 1) < 1e-9:
+                # One level pixel per screen pixel: copy whole pixels, so nothing is resampled
+                levelBox = tuple(round(value) for value in levelBox)
+                shown = level.crop(levelBox)
+                box = tuple(value * factor for value in levelBox)
+                size = shown.size
+            else:
+                shown = level.resize(size, Image.Resampling.BILINEAR, box=levelBox)
 
         if self.photo is not None and self.photo.width() == size[0] and self.photo.height() == size[1]:
             self.photo.paste(shown)
         else:
             self.photo = ImageTk.PhotoImage(shown)
-        position = ((box[0] - left) * scale, (box[1] - top) * scale)
+        position = (round((box[0] - left) * scale), round((box[1] - top) * scale))
         if self.textItem is not None:
             self.canvas.delete(self.textItem)
             self.textItem = None
@@ -572,13 +587,16 @@ class ImageView(ttk.Frame):
         scale, left, top = self.geometry()
         pointX, pointY = left + event.x / scale, top + event.y / scale
 
-        factor = 1.25 if zoomIn else 0.8
-        self.state.zoom = min(max(self.state.zoom * factor, 1.0), 64.0)
+        steps = [step for step in ZOOM_STEPS if step >= self.state.minScale]
+        if zoomIn:
+            newScale = next((step for step in steps if step > scale + 1e-9), steps[-1])
+        else:
+            newScale = next((step for step in reversed(steps) if step < scale - 1e-9), steps[0])
+        self.state.scale = newScale
 
         # Keep the pixel under the pointer in place
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
         imageWidth, imageHeight = self.image.size
-        newScale = min(width / imageWidth, height / imageHeight) * self.state.zoom
         self.state.centreX = (pointX - event.x / newScale + width / newScale / 2) / imageWidth
         self.state.centreY = (pointY - event.y / newScale + height / newScale / 2) / imageHeight
         self.state.changed()

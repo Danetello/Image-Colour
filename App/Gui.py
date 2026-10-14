@@ -215,7 +215,7 @@ class ChannelRow:
 
         self.showButton = ttk.Button(parent, text="Show", width=6, command=lambda: editor.showArea(channel))
         self.showButton.grid(row=row, column=2, sticky="w", padx=(0, 16))
-        Tooltip(self.showButton, f"Highlight where {label.lower()} is on the texture, on the left.")
+        Tooltip(self.showButton, f"Highlight where {label.lower()} is on the texture, on the left. Press again to hide it.")
 
         self.action = tk.StringVar(value=ACTION_KEEP)
         self.actionBox = ttk.Combobox(parent, textvariable=self.action, values=ACTIONS, state="readonly", width=22)
@@ -386,6 +386,8 @@ class EditorTab(ttk.Frame):
         self.lastRenderedProfile = None
         self.savedName = None
         self.setEntries = []
+        self.shownArea = None
+        self.inputBeforeArea = "base"
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(5, weight=1)
@@ -492,13 +494,14 @@ class EditorTab(ttk.Frame):
         self.status.grid(row=0, column=3, sticky="w")
         viewHelp = ttk.Frame(renderFrame)
         viewHelp.grid(row=0, column=4, sticky="e")
-        ttk.Label(viewHelp, text="Scroll to zoom · drag to move · double-click to fit", style="Muted.TLabel").pack(side="left")
+        ttk.Label(viewHelp, text="Scroll to zoom · drag to move · double-click for actual size", style="Muted.TLabel").pack(side="left")
         helpButton(viewHelp, app, "views").pack(side="left", padx=(8, 0))
 
         # Previews
         panes = ttk.PanedWindow(self, orient="horizontal")
         panes.grid(row=5, column=0, sticky="nsew")
         self.viewState = ViewState()
+        self.viewState.minScale = self.smallestScale()
         self.viewState.listeners.append(self.onViewChanged)
         self.zoomRenderJob = None
         self.lastRenderFull = False
@@ -621,12 +624,24 @@ class EditorTab(ttk.Frame):
 
     def showInput(self):
         self.areaNote.configure(text="")
+        self.setShownArea(None)
         if self.arrays is not None:
             self.inputView.setImage(self.images[self.inputChoice.get()])
+
+    def setShownArea(self, channel):
+        self.shownArea = channel
+        for rowChannel, row in self.rows.items():
+            row.showButton.configure(text="Hide" if rowChannel == channel else "Show")
 
     def showArea(self, channel):
         if self.arrays is None:
             return
+        if self.shownArea == channel:
+            self.inputChoice.set(self.inputBeforeArea)
+            self.showInput()
+            return
+        if self.shownArea is None:
+            self.inputBeforeArea = self.inputChoice.get() or "base"
         if channel not in self.areaImages:
             labels = self.arrays[3]
             base = np.asarray(self.images["base"])
@@ -634,7 +649,8 @@ class EditorTab(ttk.Frame):
             self.areaImages[channel] = Image.fromarray(np.where(selected, base, DIM_TABLE[base]))
         self.inputChoice.set("")
         self.inputView.setImage(self.areaImages[channel])
-        self.areaNote.configure(text=f"Showing where {CHANNEL_LABELS[channel].lower()} is: the bright part. Choose a texture to go back.")
+        self.setShownArea(channel)
+        self.areaNote.configure(text=f"Showing where {CHANNEL_LABELS[channel].lower()} is: the bright part. Press Hide to go back.")
 
     # Profiles
 
@@ -835,8 +851,14 @@ class EditorTab(ttk.Frame):
         if not self.rendering and self.lastRenderedProfile is not None and not self.lastRenderFull and self.needsFullResolution():
             self.render(quiet=True)
 
+    def smallestScale(self):
+        """Never smaller than one screen pixel per rendered pixel: every texture pixel at full resolution, every preview pixel otherwise."""
+        return 1.0 if self.fullResolution.get() else 1 / PREVIEW_STEP
+
     def onFullResolutionToggled(self):
         self.app.settings["fullResolution"] = self.fullResolution.get()
+        self.viewState.minScale = self.smallestScale()
+        self.viewState.changed()
         self.markResultStale()
         self.scheduleAutoRender()
 
