@@ -1,9 +1,10 @@
-# /output
-# /Textures_*/*
-/__pycache__
+__pycache__/
 /CC store
 /Base Store
 /Grey Store
-/venv
+/App/venv
 *.pyc
-/settings.json
+/App/settings.json
+/Finals
+/Textures
+/Output
