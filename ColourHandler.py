@@ -1,327 +1,275 @@
 import numpy as np
 from PIL import Image
 
+from ProfileHandler import MASK_CHANNELS
+
 RESOLUTION = 10000
 
+RED, GREEN, BLUE, WHITE, BLACK = range(len(MASK_CHANNELS))
+
+# Shade method constants, fitted against the original Ultramarine textures: around the typical
+# grey value, base lightness changes ~0.5x as fast as grey lightness and levels off at ~0.1.
+DETAIL_SLOPE = 0.5
+SHIFT_LIMIT = 0.1
+
+# OKLab matrices (Björn Ottosson)
+LINEAR_TO_LMS = np.array([
+    [0.4122214708, 0.5363325363, 0.0514459929],
+    [0.2119034982, 0.6806995451, 0.1073969566],
+    [0.0883024619, 0.2817188376, 0.6299787005],
+])
+LMS_TO_OKLAB = np.array([
+    [0.2104542553, 0.7936177850, -0.0040720468],
+    [1.9779984951, -2.4285922050, 0.4505937099],
+    [0.0259040371, 0.7827717662, -0.8086757660],
+])
+LMS_TO_LINEAR = np.linalg.inv(LINEAR_TO_LMS)
+OKLAB_TO_LMS = np.linalg.inv(LMS_TO_OKLAB)
+
+# Shading depends only on each grey pixel's lightness, so it's worked out once for this many evenly spaced
+# lightness levels and looked up per pixel. Neighbouring levels differ by far less than one 8-bit step.
+LIGHTNESS_LEVELS = 4096
+
+
+def srgbToLinear(c):
+    c = np.asarray(c, dtype=np.float64) / 255
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+# Exact sRGB -> linear values for every 8-bit channel value
+SRGB_TO_LINEAR = srgbToLinear(np.arange(256))
+
+
+def srgbToOklab(rgb):
+    return np.cbrt(srgbToLinear(rgb) @ LINEAR_TO_LMS.T) @ LMS_TO_OKLAB.T
+
+
+def greyLightness(grey):
+    """OKLab lightness of an (N, 3) array of 0-255 pixels."""
+    return np.cbrt(SRGB_TO_LINEAR[grey] @ LINEAR_TO_LMS.T) @ LMS_TO_OKLAB[0]
+
+
+def oklabToLinear(lab):
+    return ((lab @ OKLAB_TO_LMS.T) ** 3) @ LMS_TO_LINEAR.T
+
+
+def oklabToSrgb(lab):
+    """Converts OKLab to 0-255 sRGB, reducing chroma (not hue or lightness) for colours outside sRGB."""
+    lab = lab.copy()
+    linear = oklabToLinear(lab)
+    outside = ((linear < 0) | (linear > 1)).any(axis=-1)
+
+    if outside.any():
+        lo = np.zeros(outside.sum())
+        hi = np.ones(outside.sum())
+        for _ in range(16):
+            mid = (lo + hi) / 2
+            test = oklabToLinear(lab[outside] * np.column_stack([np.ones_like(mid), mid, mid]))
+            fits = ((test >= -1e-6) & (test <= 1 + 1e-6)).all(axis=-1)
+            lo = np.where(fits, mid, lo)
+            hi = np.where(fits, hi, mid)
+        lab[outside, 1:] *= lo[:, None]
+        linear[outside] = oklabToLinear(lab[outside])
+
+    c = np.clip(linear, 0, 1)
+    return np.round(255 * np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)).astype(np.int64)
+
+
 def extractImage(pathName):
+    """Loads an image as an (height, width, 3) int64 RGB array."""
+    return np.asarray(Image.open(pathName).convert("RGB"), dtype=np.int64)
+
+
+def classifyMask(mask):
     """
-    This function extracts the specified image from the selected folder and returns an
-    RGB array of its colour values.
-    
-    Args:
-        type (str): type specifier, whether the image is a base, grey or mask image 
-        position (int): position of the image in the specified file list
-
-    Returns:
-        imageArray: a 3D np array of all the rgb values of the image
+    Labels each mask pixel by its dominant channel: pure black and pure white get their
+    own labels, otherwise red wins ties over green, and green over blue.
     """
+    r, g, b = mask[..., 0], mask[..., 1], mask[..., 2]
+    total = mask.sum(axis=-1)
 
-    imageData = Image.open(pathName).convert('RGB')
-    imageArray = np.asarray(imageData, dtype=np.uint64)
-    
-    return imageArray
+    labels = np.where((r >= g) & (r >= b), RED, np.where(g >= b, GREEN, BLUE))
+    labels[total == 765] = WHITE
+    labels[total == 0] = BLACK
+    return labels
 
-def imageRecolour(gradientListIn, maskInputIn, colourArrayIn, inputRGB, widthIn, lengthIn):
+
+def tintPixels(grey, spec):
+    """Recolours an (N, 3) array of grey texture pixels with a tint channel spec."""
+    if spec.method == "legacy":
+        return legacyTintPixels(grey, spec)
+    return shadePixels(grey, spec)
+
+
+def softLimit(x, slope, limit):
+    """Rises with `slope` near zero and levels off smoothly at +/- limit."""
+    if limit <= 0:
+        return np.zeros_like(x)
+    return limit * np.tanh(slope * x / limit)
+
+
+def shadePixels(grey, spec, lightness=None, median=None):
     """
-    This function takes a grey scale image and calculated a single % value of how light that pixel is.
-    This result is stored in a 2D list that is then returned, with each value representing a pixel
-    
-    &
-    
-    This function takes a coloured image and determine which pixel is 
-    predominantly red, green or blue, based on the highest value in each pixel rgb.
-    It then assigns r, g or b to that pixel
-
-    Args:
-        gradientInput (3D list): 3D list of the rgb values of the greyscale image
-        maskInput (3D list): 3D list of the rgb values of the colour image
-        widthIn (int): The width of the image
-        lengthIn (int): The length of the image
-
-    Returns:
-        3D list: a list containing the new recoloured images as pixels
+    Pixels at the region's typical grey value get exactly the spec colour. Lighter or darker grey
+    shifts the lightness up or down (keeping hue and saturation), limited by how much room the
+    colour has, so near-black and near-white colours keep their detail instead of clipping.
+    `lightness` and `median` can be passed in when they're already known for these pixels.
     """
-    
-    recolouredImage = np.array([[[0,0,0]]*widthIn]*lengthIn, dtype=np.uint64)
+    if lightness is None:
+        lightness = greyLightness(grey)
+    if spec.reference is not None:
+        reference = spec.reference
+    else:
+        reference = np.median(lightness) if median is None else median
 
-    for length in range(0,lengthIn):
-        for width in range(0,widthIn):
-            totalColour = gradientListIn[length][width][0] + gradientListIn[length][width][1] + gradientListIn[length][width][2]
-            gradientColour = (totalColour / 765) * RESOLUTION
-            
-            black = maskInputIn[length][width][0] + maskInputIn[length][width][1] + maskInputIn[length][width][2]
+    table = shadeLevels(np.linspace(0.0, 1.0, LIGHTNESS_LEVELS), reference, spec)
+    index = np.rint(lightness * (LIGHTNESS_LEVELS - 1)).astype(np.intp)
+    np.clip(index, 0, LIGHTNESS_LEVELS - 1, out=index)
+    return table[index]
 
-            determinedColour = "R"
-            
-            if (black == 0):
-                determinedColour = "N"
-            elif (black == 765):
-                determinedColour = "W"
-            elif (maskInputIn[length][width][0] >= maskInputIn[length][width][1]) and (maskInputIn[length][width][0] >= maskInputIn[length][width][2]):
-                determinedColour = "R"
-            elif (maskInputIn[length][width][1] >= maskInputIn[length][width][0]) and (maskInputIn[length][width][1] >= maskInputIn[length][width][2]):
-                determinedColour = "G"
-            elif (maskInputIn[length][width][2] >= maskInputIn[length][width][0]) and (maskInputIn[length][width][2] >= maskInputIn[length][width][1]):
-                determinedColour = "B"
-            else:
-                determinedColour = "R"
-                
-            if (determinedColour == "R"):
-                recolouredImage[length][width] = recolourPixel(gradientColour, inputRGB, gradientListIn[length][width])[:]
-                # recolouredImage[length][width] = recolourPixel(gradientColour, decalColourDark, gradientListIn[length][width])[:]
-                # recolouredImage[length][width] = recolourPixelTrims(gradientColour, decalColourLight)[:]
-                # recolouredImage[length][width] = colourArrayIn[length][width][:]
-            elif (determinedColour == "W"):
-                recolouredImage[length][width] = recolourPixelLogo(gradientColour, [145,15,15], gradientListIn[length][width])[:]
-            elif (determinedColour == "G"):
-                recolouredImage[length][width] = recolourPixelLogo(gradientColour, decalColourLight, gradientListIn[length][width])[:]
-                # recolouredImage[length][width] = recolourPixel(gradientColour, decalColourDark)[:]
-            elif (determinedColour == "B"):
-                # recolouredImage[length][width] = recolourPixelTrims(gradientColour, MetalColourGold, gradientListIn[length][width])[:]
-                # recolouredImage[length][width] = recolourPixel(gradientColour, decalColourLight, gradientListIn[length][width])[:]
-                # recolouredImage[length][width] = recolourPixel(gradientColour, decalColourDark)[:]
-                recolouredImage[length][width] = colourArrayIn[length][width][:]
-                # recolouredImage[length][width] = recolourPixelLogo(gradientColour, [100,15,15])[:]
-            elif (determinedColour == "N"):
-                recolouredImage[length][width] = colourArrayIn[length][width][:]
-                # recolouredImage[length][width] = gradientListIn[length][width][:] # Make the colour just be the one from the grey texture
-            else:
-                recolouredImage[length][width] = colourArrayIn[length][width][:] # Make the colour just be the one from the unedited colour texture
-        
-    outputList = []
 
-    for length in range(0,lengthIn):
-        outputListlayer = []
-        for width in range(0,widthIn):
-            outputListlayer.append(list(recolouredImage[length][width]))
-        outputList.append(outputListlayer)
+def shadeLevels(levels, reference, spec):
+    """The shaded colour for each grey lightness in `levels`."""
+    target = srgbToOklab(spec.colour)
+    offset = levels - reference
+    slope = DETAIL_SLOPE * spec.detail
+    roomUp = min(SHIFT_LIMIT * spec.highlights, 1 - target[0])
+    roomDown = min(SHIFT_LIMIT * spec.shadows, target[0])
+    shift = np.where(offset >= 0, softLimit(offset, slope, roomUp), softLimit(offset, slope, roomDown))
 
-    return outputList
+    lab = np.tile(target, (len(levels), 1))
+    lab[:, 0] += shift
+    return oklabToSrgb(lab)
 
-def recolourPixel(brightness, inputColour, greyColour):
+
+def legacyTintPixels(grey, spec):
     """
-        This function takes an imput colour an scales its brightness.
-    Args:
-        brightness (float): how close the pixel is to being white
-        inputColour (list): rgb colour being scaled
-
-    Returns:
-        list: rgb list of scaled colour
+    The original recolour: colour * (1 - grey brightness), then flip / lift rules.
+    The darker the grey pixel, the closer the result is to the spec colour.
     """
-    
-    # This is done as the darker a colour is, the more it should match the input colour 
-    invertPercentage = (RESOLUTION - brightness)/RESOLUTION
-    percentage = (brightness)/RESOLUTION
-    
-    outputColour = [0,0,0]
-    
-    outputColour[0] = round(inputColour[0] * (invertPercentage))
-    outputColour[1] = round(inputColour[1] * (invertPercentage))
-    outputColour[2] = round(inputColour[2] * (invertPercentage))
-        
-    # if sum(outputColour) < 150:
-    #     outputColour[0] = round(inputColour[0] * (percentage))    
-    #     outputColour[1] = round(inputColour[1] * (percentage))   
-    #     outputColour[2] = round(inputColour[2] * (percentage))    
-    
-    # Ultra marine settings
-    # if sum(outputColour) < 50:
-    #     outputColour[0] = (outputColour[0] + (4 * 6))    
-    #     outputColour[1] = (outputColour[1] + (6 * 6))    
-    #     outputColour[2] = (outputColour[2] + (10 * 6))   
-    # if sum(outputColour) < 100:
-    #     outputColour[0] = (outputColour[0] + (4 * 4))    
-    #     outputColour[1] = (outputColour[1] + (6 * 4))    
-    #     outputColour[2] = (outputColour[2] + (10 * 4))   
-    # if sum(outputColour) < 150:
-    #     outputColour[0] = (outputColour[0] + (4 * 3))    
-    #     outputColour[1] = (outputColour[1] + (6 * 3))    
-    #     outputColour[2] = (outputColour[2] + (10 * 3))   
-    # if sum(outputColour) < 200:
-    #     outputColour[0] = (outputColour[0] + (4 * 2))    
-    #     outputColour[1] = (outputColour[1] + (6 * 2))    
-    #     outputColour[2] = (outputColour[2] + (10 * 2))   
+    colour = np.array(spec.colour, dtype=np.float64)
+    brightness = (grey.sum(axis=-1) / 765) * RESOLUTION
 
-    # # Imperial
-    # if sum(outputColour) < 10:
-    #     outputColour[0] = (outputColour[0] + 240)    
-    #     outputColour[1] = (outputColour[1] + 210)   
-    #     outputColour[2] = (outputColour[2] + 60)    
-    # elif sum(outputColour) < 60:
-    #     outputColour[0] = (outputColour[0] + 220)    
-    #     outputColour[1] = (outputColour[1] + 190)   
-    #     outputColour[2] = (outputColour[2] + 50)    
-    #     # for i in range(3):
-    #     #     outputColour[i] = (outputColour[i] + 7) * 12
-    # elif sum(outputColour) < 100:
-    #     outputColour[0] = (outputColour[0] + 200)    
-    #     outputColour[1] = (outputColour[1] + 170)   
-    #     outputColour[2] = (outputColour[2] + 40)    
-    #     # for i in range(3):
-    #     #     outputColour[i] = (outputColour[i] + 7) * 10
-    # elif sum(outputColour) < 140:
-    #     outputColour[0] = (outputColour[0] + 180)    
-    #     outputColour[1] = (outputColour[1] + 150)   
-    #     outputColour[2] = (outputColour[2] + 30)    
-    #     # for i in range(3):
-    #     #     outputColour[i] = (outputColour[i] + 7) * 8
-    
-    # Salamanders
-    # if sum(outputColour) < 10:
-    #     outputColour[0] = (outputColour[0] + 10)    
-    #     outputColour[1] = (outputColour[1] + 60)    
-    #     outputColour[2] = (outputColour[2] + 30)   
-    # elif sum(outputColour) < 20:
-    #     for i in range(3):
-    #         outputColour[i] = (outputColour[i] + 2) * 4
-    # elif sum(outputColour) < 30:
-    #     for i in range(3):
-    #         outputColour[i] = (outputColour[i] + 2) * 3
-    # elif sum(outputColour) < 40:
-    #     for i in range(3):
-    #         outputColour[i] = (outputColour[i] + 0) * 2
+    invertPercentage = (RESOLUTION - brightness) / RESOLUTION
+    out = np.round(colour * invertPercentage[:, None])
 
-    # Templars light
-    # if sum(outputColour) < 10:
-    #     outputColour[0] = (outputColour[0] + 200)    
-    #     outputColour[1] = (outputColour[1] + 200)    
-    #     outputColour[2] = (outputColour[2] + 200)   
-    # elif sum(outputColour) < 20:
-    #     for i in range(3):
-    #         outputColour[i] = (outputColour[i] + 50) * 4
-    # elif sum(outputColour) < 30:
-    #     for i in range(3):
-    #         outputColour[i] = (outputColour[i] + 50) * 3
-    # elif sum(outputColour) < 150:
-    #     for i in range(3):
-    #         outputColour[i] = (outputColour[i] + 50) * 2
-    
-    # Templars Dark
-    if sum(outputColour) < 10:
-        outputColour[0] = (outputColour[0] + 0)    
-        outputColour[1] = (outputColour[1] + 0)   
-        outputColour[2] = (outputColour[2] + 0)    
-    elif sum(outputColour) < 20:
-        for i in range(3):
-            outputColour[i] = (outputColour[i] + 1) * 1
-    elif sum(outputColour) < 30:
-        for i in range(3):
-            outputColour[i] = (outputColour[i] + 1) * 1
-    elif sum(outputColour) < 160:
-        for i in range(3):
-            outputColour[i] = (outputColour[i] + 1) * 1
+    # Pixels that came out too dark are rescaled by brightness instead
+    if spec.flipBelow:
+        flip = out.sum(axis=-1) < spec.flipBelow
+        percentage = brightness[flip] / RESOLUTION
+        out[flip] = np.round(colour * percentage[:, None])
 
-    return outputColour
+    out = out.astype(np.int64)
 
-def recolourPixelTrims(brightness, inputColour, greyColour):
+    if spec.lift:
+        out = applyLift(out, spec.lift, spec.liftMode)
+
+    return np.clip(out, 0, 255)
+
+
+def applyLift(out, rules, mode):
     """
-        This function takes an imput colour an scales its brightness.
-    Args:
-        brightness (float): how close the pixel is to being white
-        inputColour (list): rgb colour being scaled
-
-    Returns:
-        list: rgb list of scaled colour
+    Applies `(pixel + add) * multiply` to pixels whose r+g+b sum is below each rule's threshold.
+    mode "first": only the first matching rule applies (thresholds checked against the original sum).
+    mode "all":   every rule is checked in turn against the sum after the previous rules.
     """
-    
-    # This is done as the darker a colour is, the more it should match the input colour 
-    invertPercentage = (10000 - brightness)/10000
-    percentage = (brightness)/RESOLUTION
-    outputColour = [0,0,0]
-    
-    outputColour[0] = round(inputColour[0] * (invertPercentage))
-    outputColour[1] = round(inputColour[1] * (invertPercentage))
-    outputColour[2] = round(inputColour[2] * (invertPercentage))
+    startSum = out.sum(axis=-1)
+    unmatched = np.ones(len(out), dtype=bool)
 
-    #-----------------------------------------------------
-    # Gold Trims
-    if sum(outputColour) < 100:
-        outputColour[0] = (outputColour[0] + (25 * 4))    
-        outputColour[1] = (outputColour[1] + (20 * 4))    
-        outputColour[2] = (outputColour[2] + (14 * 4))   
-    if sum(outputColour) < 200:
-        outputColour[0] = (outputColour[0] + (25 * 4))    
-        outputColour[1] = (outputColour[1] + (20 * 4))    
-        outputColour[2] = (outputColour[2] + (14 * 4))   
-    if sum(outputColour) < 250:
-        outputColour[0] = (outputColour[0] + (25 * 3))    
-        outputColour[1] = (outputColour[1] + (20 * 3))    
-        outputColour[2] = (outputColour[2] + (14 * 3))   
-    if sum(outputColour) < 350:
-        outputColour[0] = (outputColour[0] + (25 * 2))    
-        outputColour[1] = (outputColour[1] + (20 * 2))    
-        outputColour[2] = (outputColour[2] + (14 * 2))   
-    # if sum(outputColour) < 500:
-    #     outputColour[0] = (outputColour[0] + (25 * 1))    
-    #     outputColour[1] = (outputColour[1] + (20 * 1))    
-    #     outputColour[2] = (outputColour[2] + (14 * 1))   
-    #-----------------------------------------------------
+    for rule in rules:
+        if mode == "all":
+            hit = out.sum(axis=-1) < rule.below
+        else:
+            hit = unmatched & (startSum < rule.below)
+            unmatched &= ~hit
+
+        lifted = (out[hit] + np.array(rule.add)) * rule.multiply
+        out[hit] = np.round(lifted).astype(np.int64)
+
+    return out
 
 
-    
-    return outputColour
-
-def recolourPixelLogo(brightness, inputColour, greyColour):
+def regionStats(base, labels):
     """
-        This function takes an imput colour an scales its brightness.
-    Args:
-        brightness (float): how close the pixel is to being white
-        inputColour (list): rgb colour being scaled
-
-    Returns:
-        list: rgb list of scaled colour
+    For each mask channel: (fraction of the image it covers, median base colour or None).
+    The median base colour is a good starting colour, as it reproduces the original look.
     """
-    
-    # This is done as the darker a colour is, the more it should match the input colour 
-    invertPercentage = 10000 - brightness
-    percentage = (brightness)/RESOLUTION
-    outputColour = [0,0,0]
-    
-    for i in range(3):
-        outputColour[i] = round(inputColour[i] * (invertPercentage/10000))
-        
-    if sum(outputColour) < 100:
-        outputColour[0] = round(inputColour[0] * (percentage))    
-        outputColour[1] = round(inputColour[1] * (percentage))   
-        outputColour[2] = round(inputColour[2] * (percentage))    
-        
-
-    return outputColour
+    stats = {}
+    for index, channel in enumerate(MASK_CHANNELS):
+        selected = labels == index
+        coverage = selected.mean()
+        colour = medianColour(base[selected]) if selected.any() else None
+        stats[channel] = (coverage, colour)
+    return stats
 
 
-def createRecolour(imagePosistions):
+def medianColour(pixels):
+    """Per-channel median of (N, 3) 0-255 pixels, counted with histograms (much faster than sorting)."""
+    middle = (len(pixels) + 1) // 2
+    return tuple(int(np.searchsorted(np.cumsum(np.bincount(pixels[:, c], minlength=256)), middle)) for c in range(3))
+
+
+def maskIsCopy(base, grey, mask):
+    """A CC texture that is a copy of the base or grey texture marks no parts, so nothing should change."""
+    return np.array_equal(mask, base) or np.array_equal(mask, grey)
+
+
+def imageRecolour(base, grey, mask, profile, labels=None, cache=None):
+    """
+    Builds the recoloured image from the three source textures and a profile.
+    `cache` is an optional dict kept per texture set, so repeated renders skip work that doesn't depend on the profile.
+    """
+    if maskIsCopy(base, grey, mask):
+        return base.astype(np.uint8)
+    if labels is None:
+        labels = classifyMask(mask)
+    output = base.astype(np.uint8)
+
+    for index, channel in enumerate(MASK_CHANNELS):
+        spec = profile.channels[channel]
+        if spec.style == "keep":
+            continue
+
+        selected = labels == index
+        if not selected.any():
+            continue
+
+        if spec.style == "grey":
+            output[selected] = grey[selected]
+        elif spec.method == "shade" and cache is not None:
+            if index not in cache:
+                lightness = greyLightness(grey[selected])
+                cache[index] = (lightness, np.median(lightness))
+            lightness, median = cache[index]
+            output[selected] = shadePixels(None, spec, lightness, median)
+        else:
+            output[selected] = tintPixels(grey[selected], spec)
+
+    return output
+
+
+def createRecolour(job):
+    """
+    Worker entry point. `job` is (textureSet, profile, outputDir).
+    Returns (outputPath, None, note) on success, where note is None or something the user should know,
+    or (textureName, errorMessage, None) on failure.
+    """
+    textureSet, profile, outputDir = job
     try:
-        index = imagePosistions[0]
-        rgbIn = imagePosistions[1]
-        baseImage = imagePosistions[2]
-        greyImage = imagePosistions[3]
-        maskImage = imagePosistions[4]
-        output = imagePosistions[5]
+        base = extractImage(textureSet.base)
+        grey = extractImage(textureSet.grey)
+        mask = extractImage(textureSet.mask)
 
-        maskImageExtract = extractImage(maskImage)
-        baseImageExtract = extractImage(baseImage)
-        greyImageExtract = extractImage(greyImage)
-        
-        lengthImage = len(greyImageExtract)
-        widthImage = len(greyImageExtract[0])
-        
-        newImage = imageRecolour(greyImageExtract, maskImageExtract, baseImageExtract, rgbIn, widthImage, lengthImage)
+        if not (base.shape == grey.shape == mask.shape):
+            raise ValueError(f"size mismatch: base {base.shape[1::-1]}, grey {grey.shape[1::-1]}, mask {mask.shape[1::-1]}")
 
-        # Generate the image
-        imageArr = np.array(newImage, dtype= np.uint8)
-        im = Image.fromarray(imageArr)
-        nameStart = str(baseImage).rfind('\\') + 1
-        im.save(output + baseImage[nameStart:-4] + ".png")
-        
-        print("Image generated: ", baseImage[nameStart:-4] + ".png")
+        note = "CC texture is a copy of the base, so it was saved unchanged" if maskIsCopy(base, grey, mask) else None
+        newImage = imageRecolour(base, grey, mask, profile)
+
+        outputDir.mkdir(parents=True, exist_ok=True)
+        outputPath = outputDir / (textureSet.name + ".png")
+        Image.fromarray(newImage).save(outputPath)
+        return outputPath, None, note
 
     except Exception as e:
-        print(f"Error colouring file: {e}")
-    
-decalColourLight = [220, 220, 220]
-decalColourDark = [20, 20, 20]
-decalColourRed = [145,15,15]
-MetalColourRed = [100,15,15]
-MetalColourGold1= [255, 204, 143]
-MetalColourGold= [215, 164, 103]
-MetalColourGold2 = [186, 149, 104]
+        return textureSet.name, f"{type(e).__name__}: {e}", None

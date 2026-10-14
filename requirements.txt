@@ -1,0 +1,4 @@
+# Python >= 3.12. Checked by install_venv.bat / install_venv.sh and at startup; the policy lives in SystemSupport.py.
+# Tkinter (for the GUI) ships with Python on Windows and macOS; on Linux install it with e.g. `sudo apt install python3-tk`.
+numpy==2.5.1
+pillow==12.3.0

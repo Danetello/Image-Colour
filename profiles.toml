@@ -1,0 +1,134 @@
+# Recolour profiles. Run `python main.py --list` to see them, `python main.py <name>` to render one.
+#
+# How a texture is built
+# ----------------------
+# Every pixel of the mask texture (Textures_Mask/*_cc) falls into one of five channels:
+#   red   - mostly red pixels      (main armour)
+#   green - mostly green pixels    (decals / chapter logo)
+#   blue  - mostly blue pixels     (trims and everything else)
+#   white - pure white (255,255,255)
+#   black - pure black (0,0,0)
+#
+# Each channel is set to one of:
+#   "keep"           - copy the pixel from the base texture unchanged
+#   "grey"           - copy the pixel from the grey texture
+#   "<preset name>"  - use a channel definition from [presets]
+#   { colour = ... } - recolour, using the grey texture for shading:
+#
+#       colour     = [r, g, b] or a name from [colours]. This is exactly what flat, undamaged paint
+#                    will look like, so pick it with a colour picker and you're done.
+#       detail     = 1.0  How strongly the grey texture's shading shows through (0 = flat colour).
+#       highlights = 1.0  How far scratches / worn edges may lighten the colour.
+#       shadows    = 1.0  How far grime / crevices may darken the colour.
+#       reference  = "auto" (default) or 0-1. The grey lightness that maps to exactly `colour`;
+#                    "auto" uses the typical (median) grey value of that region.
+#
+#     1.0 for detail / highlights / shadows matches the shading of the original Ultramarine textures.
+#     Shading is applied to lightness only, and is limited by how much room the colour has, so very
+#     dark or very light colours keep their detail rather than clipping to black or white.
+#
+#     method = "legacy" switches to the original formula (colour * (1 - grey)) for that channel,
+#     which takes flip_below / lift / lift_mode instead (see profiles.salamanders_legacy).
+#
+# Inheritance
+# -----------
+# Every profile starts from [defaults]. A profile can also `extends = "other_profile"`.
+# Channel settings merge field by field, so a profile only lists what differs,
+# e.g. `red = { colour = "blood_angel_red" }` keeps any inherited detail / highlights / shadows.
+
+[colours]
+ultramarine_blue = [52, 67, 107]  # measured from the original game texture
+salamander_green = [7, 73, 22]  # measured from the Dev Example finals
+salamander_black = [16, 16, 16]
+salamander_green_dark = [0, 51, 22]
+imperial_fist_yellow = [181, 138, 24]
+blood_angel_red = [108, 12, 15]
+templar_black = [16, 16, 16]  # measured from the Dev Example Soldier Templar finals
+templar_trim_black = [20, 20, 20]
+templar_silver = [122, 122, 122]
+templar_pad_white = [159, 159, 159]
+templar_white = [200, 200, 200]
+decal_light = [151, 151, 151]
+decal_dark = [13, 13, 13]
+decal_red = [102, 11, 11]
+metal_gold = [176, 137, 89]
+
+[presets]
+gold_trim = { colour = "metal_gold", highlights = 1.5 }
+
+[defaults]
+green = { colour = "decal_light" }
+white = { colour = "decal_red" }
+blue = "keep"
+black = "keep"
+
+
+[profiles.ultramarines]
+description = "Ultramarine blue, white decals"
+red = { colour = "ultramarine_blue" }
+
+[profiles.ultramarines_gold]
+description = "Ultramarines with gold trims"
+extends = "ultramarines"
+blue = "gold_trim"
+
+[profiles.salamanders]
+description = "Salamander green armour, white decals"
+red = { colour = "salamander_green" }
+
+[profiles.salamanders_helmet]
+description = "Salamander green helmet with gold trims"
+extends = "salamanders"
+blue = "gold_trim"
+
+[profiles.salamanders_shoulders]
+description = "Salamander black shoulder pads, white decals"
+extends = "salamanders"
+red = { colour = "salamander_black" }
+
+[profiles.salamanders_dark]
+description = "Darker Salamander green"
+red = { colour = "salamander_green_dark" }
+
+[profiles.imperial_fists]
+description = "Imperial Fists yellow"
+red = { colour = "imperial_fist_yellow" }
+
+[profiles.blood_angels]
+description = "Blood Angels red"
+red = { colour = "blood_angel_red" }
+
+[profiles.black_templars]
+description = "Black Templar armour: black with silver trims, white decals"
+red = { colour = "templar_black" }
+blue = { colour = "templar_silver", detail = 2.0, highlights = 3.0, shadows = 3.0 }  # metal needs more contrast than paint
+black = "grey"
+
+[profiles.black_templars_shoulders]
+description = "Black Templar shoulder pads: white with black trims and decals"
+extends = "black_templars"
+red = { colour = "templar_pad_white" }
+green = { colour = "templar_black" }
+blue = { colour = "templar_black" }
+
+[profiles.black_templars_all_black]
+description = "Black Templar parts that are black all over, like boots and trims"
+extends = "black_templars"
+red = { colour = "templar_trim_black" }
+blue = { colour = "templar_trim_black" }
+black = { colour = "templar_trim_black" }
+
+[profiles.templars_light]
+description = "White armour, black decals"
+red = { colour = "templar_white" }
+green = { colour = "decal_dark" }
+
+# The original algorithm and tuning, kept for comparison. Reproduces the old output exactly.
+[profiles.salamanders_legacy]
+description = "Original formula and lift rules (old Salamanders output)"
+red = { method = "legacy", colour = [10, 100, 30], lift = [
+    { below = 10, add = 0 },
+    { below = 160, add = 1 },
+] }
+green = { method = "legacy", colour = [220, 220, 220], flip_below = 100 }
+white = { method = "legacy", colour = [145, 15, 15], flip_below = 100 }

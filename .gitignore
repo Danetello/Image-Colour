@@ -4,3 +4,6 @@
 /CC store
 /Base Store
 /Grey Store
+/venv
+*.pyc
+/settings.json
