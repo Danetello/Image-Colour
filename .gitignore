@@ -1,3 +1,6 @@
-/output
-/Textures_*/*
+# /output
+# /Textures_*/*
 /__pycache__
+/CC store
+/Base Store
+/Grey Store

@@ -17,7 +17,7 @@ decalColourLight = [220, 220, 220]
 decalColourDark = [20, 20, 20]
 
 NUM_PROCESSORS = 6
-CHAPTER_COLOUR = ultraBlue
+CHAPTER_COLOUR = salamanderGreenLight
 
 
 if __name__ == "__main__":

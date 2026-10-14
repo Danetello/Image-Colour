@@ -68,7 +68,7 @@ def imageRecolour(gradientListIn, maskInputIn, colourArrayIn, inputRGB, widthIn,
                 
             if (determinedColour == "R"):
                 recolouredImage[length][width] = recolourPixel(gradientColour, inputRGB, gradientListIn[length][width])[:]
-                # recolouredImage[length][width] = recolourPixel(gradientColour, decalColourDark)[:]
+                # recolouredImage[length][width] = recolourPixel(gradientColour, decalColourDark, gradientListIn[length][width])[:]
                 # recolouredImage[length][width] = recolourPixelTrims(gradientColour, decalColourLight)[:]
                 # recolouredImage[length][width] = colourArrayIn[length][width][:]
             elif (determinedColour == "W"):
@@ -77,10 +77,10 @@ def imageRecolour(gradientListIn, maskInputIn, colourArrayIn, inputRGB, widthIn,
                 recolouredImage[length][width] = recolourPixelLogo(gradientColour, decalColourLight, gradientListIn[length][width])[:]
                 # recolouredImage[length][width] = recolourPixel(gradientColour, decalColourDark)[:]
             elif (determinedColour == "B"):
-                recolouredImage[length][width] = recolourPixelTrims(gradientColour, MetalColourGold, gradientListIn[length][width])[:]
+                # recolouredImage[length][width] = recolourPixelTrims(gradientColour, MetalColourGold, gradientListIn[length][width])[:]
                 # recolouredImage[length][width] = recolourPixel(gradientColour, decalColourLight, gradientListIn[length][width])[:]
                 # recolouredImage[length][width] = recolourPixel(gradientColour, decalColourDark)[:]
-                # recolouredImage[length][width] = colourArrayIn[length][width][:]
+                recolouredImage[length][width] = colourArrayIn[length][width][:]
                 # recolouredImage[length][width] = recolourPixelLogo(gradientColour, [100,15,15])[:]
             elif (determinedColour == "N"):
                 recolouredImage[length][width] = colourArrayIn[length][width][:]
@@ -119,10 +119,10 @@ def recolourPixel(brightness, inputColour, greyColour):
     outputColour[1] = round(inputColour[1] * (invertPercentage))
     outputColour[2] = round(inputColour[2] * (invertPercentage))
         
-    if sum(outputColour) < 150:
-        outputColour[0] = round(inputColour[0] * (percentage))    
-        outputColour[1] = round(inputColour[1] * (percentage))   
-        outputColour[2] = round(inputColour[2] * (percentage))    
+    # if sum(outputColour) < 150:
+    #     outputColour[0] = round(inputColour[0] * (percentage))    
+    #     outputColour[1] = round(inputColour[1] * (percentage))   
+    #     outputColour[2] = round(inputColour[2] * (percentage))    
     
     # Ultra marine settings
     # if sum(outputColour) < 50:
@@ -197,19 +197,19 @@ def recolourPixel(brightness, inputColour, greyColour):
     #         outputColour[i] = (outputColour[i] + 50) * 2
     
     # Templars Dark
-    # if sum(outputColour) < 10:
-    #     outputColour[0] = (outputColour[0] + 0)    
-    #     outputColour[1] = (outputColour[1] + 0)   
-    #     outputColour[2] = (outputColour[2] + 0)    
-    # elif sum(outputColour) < 20:
-    #     for i in range(3):
-    #         outputColour[i] = (outputColour[i] + 1) * 1
-    # elif sum(outputColour) < 30:
-    #     for i in range(3):
-    #         outputColour[i] = (outputColour[i] + 1) * 1
-    # elif sum(outputColour) < 160:
-    #     for i in range(3):
-    #         outputColour[i] = (outputColour[i] + 1) * 1
+    if sum(outputColour) < 10:
+        outputColour[0] = (outputColour[0] + 0)    
+        outputColour[1] = (outputColour[1] + 0)   
+        outputColour[2] = (outputColour[2] + 0)    
+    elif sum(outputColour) < 20:
+        for i in range(3):
+            outputColour[i] = (outputColour[i] + 1) * 1
+    elif sum(outputColour) < 30:
+        for i in range(3):
+            outputColour[i] = (outputColour[i] + 1) * 1
+    elif sum(outputColour) < 160:
+        for i in range(3):
+            outputColour[i] = (outputColour[i] + 1) * 1
 
     return outputColour
 
@@ -235,22 +235,22 @@ def recolourPixelTrims(brightness, inputColour, greyColour):
 
     #-----------------------------------------------------
     # Gold Trims
-    # if sum(outputColour) < 100:
-    #     outputColour[0] = (outputColour[0] + (25 * 4))    
-    #     outputColour[1] = (outputColour[1] + (20 * 4))    
-    #     outputColour[2] = (outputColour[2] + (14 * 4))   
-    # if sum(outputColour) < 200:
-    #     outputColour[0] = (outputColour[0] + (25 * 4))    
-    #     outputColour[1] = (outputColour[1] + (20 * 4))    
-    #     outputColour[2] = (outputColour[2] + (14 * 4))   
-    # if sum(outputColour) < 300:
-    #     outputColour[0] = (outputColour[0] + (25 * 3))    
-    #     outputColour[1] = (outputColour[1] + (20 * 3))    
-    #     outputColour[2] = (outputColour[2] + (14 * 3))   
-    # if sum(outputColour) < 400:
-    #     outputColour[0] = (outputColour[0] + (25 * 2))    
-    #     outputColour[1] = (outputColour[1] + (20 * 2))    
-    #     outputColour[2] = (outputColour[2] + (14 * 2))   
+    if sum(outputColour) < 100:
+        outputColour[0] = (outputColour[0] + (25 * 4))    
+        outputColour[1] = (outputColour[1] + (20 * 4))    
+        outputColour[2] = (outputColour[2] + (14 * 4))   
+    if sum(outputColour) < 200:
+        outputColour[0] = (outputColour[0] + (25 * 4))    
+        outputColour[1] = (outputColour[1] + (20 * 4))    
+        outputColour[2] = (outputColour[2] + (14 * 4))   
+    if sum(outputColour) < 250:
+        outputColour[0] = (outputColour[0] + (25 * 3))    
+        outputColour[1] = (outputColour[1] + (20 * 3))    
+        outputColour[2] = (outputColour[2] + (14 * 3))   
+    if sum(outputColour) < 350:
+        outputColour[0] = (outputColour[0] + (25 * 2))    
+        outputColour[1] = (outputColour[1] + (20 * 2))    
+        outputColour[2] = (outputColour[2] + (14 * 2))   
     # if sum(outputColour) < 500:
     #     outputColour[0] = (outputColour[0] + (25 * 1))    
     #     outputColour[1] = (outputColour[1] + (20 * 1))    
