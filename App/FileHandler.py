@@ -147,10 +147,15 @@ def scanTextureFolders(root):
     becomes a variant that uses that base and grey texture. Files that still have no partner become incomplete entries.
     """
     root = Path(root)
+    return scanTextureFiles(*(findImages(textureFolder(root, folder)) for folder in (BASE_FOLDER, GREY_FOLDER, MASK_FOLDER)))
+
+
+def scanTextureFiles(basePaths, greyPaths, maskPaths):
+    """scanTextureFolders for lists of base, grey and CC files, which can come from anywhere."""
     bases = {}
     entries = {}
     misnamed = []
-    for path in findImages(textureFolder(root, BASE_FOLDER)):
+    for path in basePaths:
         bases[pairKey(path)] = path
     # A base texture named like a grey or CC texture (Foo_a.png) is paired and named as Foo, but flagged to check
     for key, path in list(bases.items()):
@@ -160,8 +165,8 @@ def scanTextureFolders(root):
                 bases[stripped] = bases.pop(key)
                 misnamed.append(stripped)
                 break
-    greys = {pairKey(path, GREY_SUFFIX): path for path in findImages(textureFolder(root, GREY_FOLDER))}
-    masks = {pairKey(path, MASK_SUFFIX): path for path in findImages(textureFolder(root, MASK_FOLDER))}
+    greys = {pairKey(path, GREY_SUFFIX): path for path in greyPaths}
+    masks = {pairKey(path, MASK_SUFFIX): path for path in maskPaths}
 
     for key, path in bases.items():
         name = path.stem

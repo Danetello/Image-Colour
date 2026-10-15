@@ -2,12 +2,13 @@
 Checks the app against hand-made example sets: every texture set is rendered with its profile and compared
 with the matching image in the example's Final folder.
 
-Run from the project folder:  App/venv/Scripts/python App/tests/check_dev_example.py [--only salamanders] [--sheet comparison.png]
+Run from the project folder:  App/venv/Scripts/python App/tests/check_dev_example.py [--only salamanders] [--texture "Soldier/*"] [--sheet comparison.png]
 (App/venv/bin/python on Linux and macOS)
-Exit code 0 means every check passed. Examples whose folder isn't there (Finals is temporary) are skipped.
+Exit code 0 means every check passed. Examples whose folder isn't there (Uniforms isn't in the repository) are skipped.
 """
 import argparse
 import dataclasses
+import fnmatch
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -24,8 +25,9 @@ from ProfileHandler import MASK_CHANNELS, loadProfiles  # noqa: E402
 
 PROJECT_DIR = FileHandler.PROJECT_DIR
 EXAMPLES_DIR = PROJECT_DIR / "Examples"
-FINALS = PROJECT_DIR / "Finals"
-ULTRAMARINES = PROJECT_DIR.parent / "Ultramarines Compiled"
+# Every team's textures: Shared/<uniform> holds what's the same for every team, <team>/<uniform> the team's own files
+UNIFORMS = PROJECT_DIR / "Uniforms"
+SHARED = UNIFORMS / "Shared"
 GAME_UNIFORMS = ("Armour", "Engineer", "Grenadier", "Medic", "Officer", "Rain", "Scout", "Snow", "Soldier", "Tanker")
 NEW_UNIFORMS = ("Paratrooper", "Pilot", "Sailor")
 
@@ -84,9 +86,9 @@ EXAMPLES = {
             "checkNames": {"Soldier_Backpack", "Soldier_Boots"},
         },
     },
-    # Finals is temporary: these are skipped when it isn't there
+    # Uniforms isn't in the repository: these are skipped when it isn't there
     "finals_salamanders": {
-        "folder": FINALS / "Salamanders",
+        "folder": UNIFORMS / "Salamanders",
         "uniforms": GAME_UNIFORMS + NEW_UNIFORMS,
         "default": "salamanders",
         "profiles": SALAMANDER_PROFILES,
@@ -94,7 +96,7 @@ EXAMPLES = {
         "finalNames": {"Engineer_Skirt": "Engineer_Ski", "Scout/Soldier_Shoulders": "Scout_Shoulders"},
     },
     "finals_templars": {
-        "folder": FINALS / "Black Templar",
+        "folder": UNIFORMS / "Black Templars",
         "uniforms": GAME_UNIFORMS,
         "default": "black_templars",
         "profiles": TEMPLAR_PROFILES,
@@ -103,12 +105,15 @@ EXAMPLES = {
     },
     # The original game textures, made from the grey and CC textures only. Final holds the game texture.
     "ultramarines": {
-        "folder": ULTRAMARINES,
+        "folder": UNIFORMS / "Ultramarines",
         "uniforms": GAME_UNIFORMS,
         "default": "ultramarines",
         "profiles": {"Officer_Shoulders": "ultramarines_officer_shoulders"},
         "notes": "ultramarines",
         "fromGrey": True,
+        # Ultramarine versions of the CC textures with team decals don't exist yet: use a team's, Salamander unless listed
+        "ccFallback": UNIFORMS / "Salamanders",
+        "ccFallbackFiles": {"Soldier/Soldier_Helmet_cc.png": UNIFORMS / "Black Templars"},
     },
 }
 
@@ -275,7 +280,28 @@ def writeSheet(rows, path):
     sheet.save(path)
 
 
-def checkExample(name, example, profiles, pool, rows, thumbnails, counts):
+def uniformEntries(uniform, teamFolder, example):
+    """
+    The texture sets of one team's uniform in Uniforms. Later folders replace files of the same name from earlier ones:
+    base textures are the Ultramarine game textures, then Shared, then the team's own; grey and CC textures Shared, then the team's.
+    """
+    def files(*folders):
+        found = {}
+        for folder in folders:
+            found.update({path.name.lower(): path for path in FileHandler.findImages(folder)} if folder.is_dir() else {})
+        return list(found.values())
+
+    gameTextures = UNIFORMS / "Ultramarines" / uniform / "Final" if uniform in GAME_UNIFORMS else SHARED / uniform / "Base"
+    fallback = example.get("ccFallback")
+    masks = files(*([fallback / uniform / "CC"] if fallback else []), SHARED / uniform / "CC", teamFolder / "CC")
+    for path, team in example.get("ccFallbackFiles", {}).items():
+        if path.startswith(uniform + "/"):
+            masks = [mask for mask in masks if mask.name != Path(path).name] + [team / uniform / "CC" / Path(path).name]
+    return FileHandler.scanTextureFiles(files(gameTextures, SHARED / uniform / "Base", teamFolder / "Base"),
+                                        files(SHARED / uniform / "A", teamFolder / "A"), masks)
+
+
+def checkExample(name, example, profiles, pool, rows, thumbnails, counts, textures):
     """Prints the results for one example and returns the number of failed checks."""
     folder = example["folder"]
     print(f"\n== {name}: {folder}")
@@ -290,13 +316,15 @@ def checkExample(name, example, profiles, pool, rows, thumbnails, counts):
         if not uniformFolder.is_dir():
             print(f"SKIP {uniform}: folder not found")
             continue
-        entries = FileHandler.scanTextureFolders(uniformFolder)
+        entries = uniformEntries(uniform, uniformFolder, example) if uniform else FileHandler.scanTextureFolders(uniformFolder)
         if "scan" in example:
             problems = checkScan(entries, example["scan"])
             print(("FAIL" if problems else "PASS") + " scan: " + ("; ".join(problems) if problems else f"{len(entries)} texture sets as expected"))
             failures += bool(problems)
         for entry in entries:
             label = f"{uniform}/{entry.name}" if uniform else entry.name
+            if textures and not any(fnmatch.fnmatch(text.lower(), pattern.lower()) for pattern in textures for text in (label, entry.name)):
+                continue
             finalName = example.get("finalNames", {}).get(label, example.get("finalNames", {}).get(entry.name, entry.name))
             finalPath = uniformFolder / "Final" / (finalName + ".png")
             if not finalPath.exists():
@@ -336,6 +364,7 @@ def checkExample(name, example, profiles, pool, rows, thumbnails, counts):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     parser.add_argument("--only", choices=sorted(EXAMPLES), help="check only this example")
+    parser.add_argument("--texture", action="append", help="check only textures matching this name or uniform/name (* allowed); repeatable")
     parser.add_argument("--sheet", type=Path, help="also save a base / final / this app comparison image here")
     parser.add_argument("--profiles", type=Path, default=FileHandler.PROFILES_FILE, help="profile file (default: profiles.toml)")
     args = parser.parse_args()
@@ -344,7 +373,7 @@ def main():
     rows = []
     counts = {"PASS": 0, "OPEN": 0, "FAIL": 0}
     with ProcessPoolExecutor(max(1, min(8, (os.cpu_count() or 2) - 1))) as pool:
-        failures = sum(checkExample(name, example, profiles, pool, rows, bool(args.sheet), counts)
+        failures = sum(checkExample(name, example, profiles, pool, rows, bool(args.sheet), counts, args.texture)
                        for name, example in EXAMPLES.items() if args.only in (None, name))
 
     if args.sheet:

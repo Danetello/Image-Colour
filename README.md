@@ -94,9 +94,11 @@ compares every texture with `Final`: parts the final kept must be unchanged, and
 colour. Add `--only salamanders` or `--only templars` to check one set, and `--sheet compare.png` to save a
 side-by-side picture. Run it after changing the recolouring code.
 
-When they're present, it also checks every uniform in `Finals/Salamanders` and `Finals/Black Templar`, and the
-original Ultramarine textures in `../Ultramarines Compiled`, made from their grey and CC textures only. Each line
-says PASS, FAIL or OPEN. OPEN marks a known difference that needs a decision; the reason is printed under it.
+When the `Uniforms` folder is present (it isn't in the repository; its `README.txt` explains the layout), it also
+checks every Salamander and Black Templar uniform, and the original Ultramarine textures, made from their grey and
+CC textures only. That takes a while: add `--texture "Soldier/*"` (or any texture name, `*` allowed) to check only
+matching textures. Each line says PASS, FAIL or OPEN. OPEN marks a known difference that needs a decision; the reason
+is printed under it.
 
 ## Profiles
 
