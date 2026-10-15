@@ -489,19 +489,20 @@ class EditorTab(ttk.Frame):
                                      command=self.onFullResolutionToggled)
         fullSwitch.grid(row=0, column=2, padx=(0, 20))
         Tooltip(fullSwitch, "Always render every pixel of the texture. Off renders a half-size preview, about four times faster, "
-                            "and every pixel once you zoom in past 50%. The Batch tab always renders at full resolution.")
+                            "and every pixel once you zoom in past 50%. Actual size shows one screen pixel per rendered pixel. "
+                            "The Batch tab always renders at full resolution.")
         self.status = statusLabel(renderFrame)
         self.status.grid(row=0, column=3, sticky="w")
         viewHelp = ttk.Frame(renderFrame)
         viewHelp.grid(row=0, column=4, sticky="e")
-        ttk.Label(viewHelp, text="Scroll to zoom · drag to move · double-click for actual size", style="Muted.TLabel").pack(side="left")
+        ttk.Label(viewHelp, text="Scroll to zoom · drag to move · double-click for whole texture or actual size", style="Muted.TLabel").pack(side="left")
         helpButton(viewHelp, app, "views").pack(side="left", padx=(8, 0))
 
         # Previews
         panes = ttk.PanedWindow(self, orient="horizontal")
         panes.grid(row=5, column=0, sticky="nsew")
         self.viewState = ViewState()
-        self.viewState.minScale = self.smallestScale()
+        self.viewState.minScale = self.actualSizeScale()
         self.viewState.listeners.append(self.onViewChanged)
         self.zoomRenderJob = None
         self.lastRenderFull = False
@@ -851,14 +852,13 @@ class EditorTab(ttk.Frame):
         if not self.rendering and self.lastRenderedProfile is not None and not self.lastRenderFull and self.needsFullResolution():
             self.render(quiet=True)
 
-    def smallestScale(self):
-        """Never smaller than one screen pixel per rendered pixel: every texture pixel at full resolution, every preview pixel otherwise."""
+    def actualSizeScale(self):
+        """Actual size: one screen pixel per rendered pixel, so every texture pixel at full resolution and every preview pixel otherwise."""
         return 1.0 if self.fullResolution.get() else 1 / PREVIEW_STEP
 
     def onFullResolutionToggled(self):
         self.app.settings["fullResolution"] = self.fullResolution.get()
-        self.viewState.minScale = self.smallestScale()
-        self.viewState.changed()
+        self.viewState.setMinScale(self.actualSizeScale())
         self.markResultStale()
         self.scheduleAutoRender()
 

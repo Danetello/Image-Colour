@@ -421,16 +421,17 @@ class GuideBanner(ttk.Frame):
             self.actions.grid_remove()
 
 
-# Screen pixels per image pixel the views zoom between. Whole steps (and halves) show every pixel without blurring.
-ZOOM_STEPS = (0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32)
+# Screen pixels per image pixel the views zoom between. At or above actual size only whole multiples of it are used,
+# so every pixel stays sharp; below it, halves and quarters are copied from the half/quarter-size copies unchanged.
+ZOOM_STEPS = (1 / 32, 3 / 64, 1 / 16, 3 / 32, 1 / 8, 3 / 16, 1 / 4, 3 / 8, 1 / 2, 3 / 4, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32)
 
 
 class ViewState:
     """Zoom and position shared by image views, so they always show the same part of the texture."""
 
     def __init__(self):
-        self.scale = None  # screen pixels per image pixel; None is the smallest allowed, minScale
-        self.minScale = 1.0
+        self.scale = None  # screen pixels per image pixel; None fits the whole texture in the views
+        self.minScale = 1.0  # actual size: one screen pixel per shown pixel
         self.centreX = 0.5
         self.centreY = 0.5
         self.views = []
@@ -442,16 +443,41 @@ class ViewState:
         for listener in self.listeners:
             listener()
 
-    def reset(self):
+    def setMinScale(self, minScale):
+        self.minScale = minScale
+        if self.scale is not None and self.scale > minScale:
+            self.scale = max(step for step in self.steps() if step <= self.scale + 1e-9)
+        self.changed()
+
+    def steps(self):
+        """Zoom steps: anything below actual size, and whole multiples of it above."""
+        return [step for step in ZOOM_STEPS
+                if step < self.minScale - 1e-9 or abs(step / self.minScale - round(step / self.minScale)) < 1e-9]
+
+    def fitScale(self):
+        """The scale that shows the whole texture in every view, sharp when that's at or above actual size."""
+        fits = [min(view.canvas.winfo_width() / view.image.width, view.canvas.winfo_height() / view.image.height)
+                for view in self.views if view.image is not None and view.canvas.winfo_width() >= 2]
+        fit = min(fits, default=self.minScale)
+        if fit < self.minScale:
+            return fit
+        return max(step for step in self.steps() if step <= fit + 1e-9)
+
+    def isFitted(self):
+        return self.scale is None or abs(self.scale - self.fitScale()) < 1e-9
+
+    def fit(self):
         self.scale, self.centreX, self.centreY = None, 0.5, 0.5
         self.changed()
 
     def currentScale(self):
-        return max(self.scale or 0, self.minScale)
+        if self.scale is None:
+            return self.fitScale()
+        return max(self.scale, min(self.fitScale(), self.minScale))
 
 
 class ImageView(ttk.Frame):
-    """Shows an image at actual size or larger, with scroll-to-zoom, drag-to-move and double-click for actual size."""
+    """Shows an image fitted, at actual size or larger, with scroll-to-zoom, drag-to-move and double-click to switch."""
 
     def __init__(self, parent, theme, state, placeholder):
         super().__init__(parent)
@@ -470,14 +496,15 @@ class ImageView(ttk.Frame):
 
         self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0)
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda _e: self.scheduleRedraw())
+        # The fitted scale depends on every view's size
+        self.canvas.bind("<Configure>", lambda _e: [view.scheduleRedraw() for view in self.state.views])
         self.canvas.bind("<MouseWheel>", lambda e: self.onWheel(e, e.delta > 0))
         # Linux reports the mouse wheel as buttons 4 and 5
         self.canvas.bind("<Button-4>", lambda e: self.onWheel(e, True))
         self.canvas.bind("<Button-5>", lambda e: self.onWheel(e, False))
         self.canvas.bind("<ButtonPress-1>", self.onPress)
         self.canvas.bind("<B1-Motion>", self.onDrag)
-        self.canvas.bind("<Double-Button-1>", lambda _e: self.state.reset())
+        self.canvas.bind("<Double-Button-1>", self.onDoubleClick)
         theme.onChange(self.onTheme)
 
     def onTheme(self, palette):
@@ -584,17 +611,30 @@ class ImageView(ttk.Frame):
     def onWheel(self, event, zoomIn):
         if self.image is None:
             return
-        scale, left, top = self.geometry()
-        pointX, pointY = left + event.x / scale, top + event.y / scale
-
-        steps = [step for step in ZOOM_STEPS if step >= self.state.minScale]
+        scale = self.geometry()[0]
+        fit = self.state.fitScale()
+        lowest = min(fit, self.state.minScale)
+        steps = [lowest] + [step for step in self.state.steps() if step > lowest + 1e-9]
         if zoomIn:
             newScale = next((step for step in steps if step > scale + 1e-9), steps[-1])
         else:
             newScale = next((step for step in reversed(steps) if step < scale - 1e-9), steps[0])
-        self.state.scale = newScale
+        self.zoomTo(newScale, event)
 
-        # Keep the pixel under the pointer in place
+    def onDoubleClick(self, event):
+        if self.image is None:
+            return
+        if self.state.isFitted():
+            self.zoomTo(self.state.minScale, event)
+        else:
+            self.state.fit()
+
+    def zoomTo(self, newScale, event):
+        """Zooms to newScale, keeping the pixel under the pointer in place."""
+        scale, left, top = self.geometry()
+        pointX, pointY = left + event.x / scale, top + event.y / scale
+        # Fitted stays fitted when the window is resized
+        self.state.scale = None if abs(newScale - self.state.fitScale()) < 1e-9 else newScale
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
         imageWidth, imageHeight = self.image.size
         self.state.centreX = (pointX - event.x / newScale + width / newScale / 2) / imageWidth

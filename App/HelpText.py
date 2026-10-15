@@ -125,9 +125,9 @@ Detail, Highlights and Shadows accept values from 0 to 3. Shading only goes as f
     ("views", "Zooming and comparing", """
 - **Scroll** over a picture to zoom in or out at the pointer.
 - **Drag** to move around.
-- **Double-click** to go back to actual size.
+- **Double-click** to switch between the whole texture and actual size at the pointer.
 
-The pictures never shrink below actual size, so you always see every pixel: one screen pixel per texture pixel with **Full resolution** on, and one per preview pixel with it off. Zooming in goes in whole steps (2×, 3×, 4×…), so pixels stay sharp.
+The pictures start out showing the whole texture. Actual size is one screen pixel per texture pixel with **Full resolution** on, and one per preview pixel with it off. From actual size up, zooming goes in whole steps (2×, 3×, 4×…), so every pixel stays sharp. Zoomed out further, small details blend together; zoom in to check them.
 
 Both pictures always show the same part of the texture, so you can compare the original with the result.
 """),
